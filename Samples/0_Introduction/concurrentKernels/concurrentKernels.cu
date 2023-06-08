@@ -42,12 +42,14 @@ namespace cg = cooperative_groups;
 
 // This is a kernel that does no real work but runs at least for a specified
 // number of clocks
-__global__ void clock_block(clock_t *d_o, clock_t clock_count) {
+__global__ void clock_block(clock_t *d_o, clock_t clock_count)
+{
   unsigned int start_clock = (unsigned int)clock();
 
   clock_t clock_offset = 0;
 
-  while (clock_offset < clock_count) {
+  while (clock_offset < clock_count)
+  {
     unsigned int end_clock = (unsigned int)clock();
 
     // The code below should work like
@@ -66,23 +68,38 @@ __global__ void clock_block(clock_t *d_o, clock_t clock_count) {
   d_o[0] = clock_offset;
 }
 
+__global__ void vectorAdd(const float *A, const float *B, float *C,
+                          int numElements)
+{
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (i < numElements)
+  {
+    C[i] = A[i] + B[i] + 0.0f;
+  }
+}
+
 // Single warp reduction kernel
-__global__ void sum(clock_t *d_clocks, int N) {
+__global__ void sum(clock_t *d_clocks, int N)
+{
   // Handle to thread block group
   cg::thread_block cta = cg::this_thread_block();
   __shared__ clock_t s_clocks[32];
 
   clock_t my_sum = 0;
 
-  for (int i = threadIdx.x; i < N; i += blockDim.x) {
+  for (int i = threadIdx.x; i < N; i += blockDim.x)
+  {
     my_sum += d_clocks[i];
   }
 
   s_clocks[threadIdx.x] = my_sum;
   cg::sync(cta);
 
-  for (int i = 16; i > 0; i /= 2) {
-    if (threadIdx.x < i) {
+  for (int i = 16; i > 0; i /= 2)
+  {
+    if (threadIdx.x < i)
+    {
       s_clocks[threadIdx.x] += s_clocks[threadIdx.x + i];
     }
 
@@ -92,18 +109,20 @@ __global__ void sum(clock_t *d_clocks, int N) {
   d_clocks[0] = s_clocks[0];
 }
 
-int main(int argc, char **argv) {
-  int nkernels = 8;             // number of concurrent kernels
-  int nstreams = nkernels + 1;  // use one more stream than concurrent kernel
-  int nbytes = nkernels * sizeof(clock_t);  // number of data bytes
-  float kernel_time = 10;                   // time the kernel should run in ms
-  float elapsed_time;                       // timing variables
+int main(int argc, char **argv)
+{
+  int nkernels = 7;                        // number of concurrent kernels
+  int nstreams = nkernels + 1;             // use one more stream than concurrent kernel
+  int nbytes = nkernels * sizeof(clock_t); // number of data bytes
+  float kernel_time = 10;                  // time the kernel should run in ms
+  float elapsed_time;                      // timing variables
   int cuda_device = 0;
 
   printf("[%s] - Starting...\n", argv[0]);
 
   // get number of kernels if overridden on the command line
-  if (checkCmdLineFlag(argc, (const char **)argv, "nkernels")) {
+  if (checkCmdLineFlag(argc, (const char **)argv, "nkernels"))
+  {
     nkernels = getCmdLineArgumentInt(argc, (const char **)argv, "nkernels");
     nstreams = nkernels + 1;
   }
@@ -117,7 +136,8 @@ int main(int argc, char **argv) {
 
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, cuda_device));
 
-  if ((deviceProp.concurrentKernels == 0)) {
+  if ((deviceProp.concurrentKernels == 0))
+  {
     printf("> GPU does not support concurrent kernel execution\n");
     printf("  CUDA kernel runs will be serialized\n");
   }
@@ -126,18 +146,19 @@ int main(int argc, char **argv) {
          deviceProp.major, deviceProp.minor, deviceProp.multiProcessorCount);
 
   // allocate host memory
-  clock_t *a = 0;  // pointer to the array data in host memory
+  clock_t *a = 0; // pointer to the array data in host memory
   checkCudaErrors(cudaMallocHost((void **)&a, nbytes));
 
   // allocate device memory
-  clock_t *d_a = 0;  // pointers to data and init value in the device memory
+  clock_t *d_a = 0; // pointers to data and init value in the device memory
   checkCudaErrors(cudaMalloc((void **)&d_a, nbytes));
 
   // allocate and initialize an array of stream handles
   cudaStream_t *streams =
       (cudaStream_t *)malloc(nstreams * sizeof(cudaStream_t));
 
-  for (int i = 0; i < nstreams; i++) {
+  for (int i = 0; i < nstreams; i++)
+  {
     checkCudaErrors(cudaStreamCreate(&(streams[i])));
   }
 
@@ -152,7 +173,8 @@ int main(int argc, char **argv) {
   cudaEvent_t *kernelEvent;
   kernelEvent = (cudaEvent_t *)malloc(nkernels * sizeof(cudaEvent_t));
 
-  for (int i = 0; i < nkernels; i++) {
+  for (int i = 0; i < nkernels; i++)
+  {
     checkCudaErrors(
         cudaEventCreateWithFlags(&(kernelEvent[i]), cudaEventDisableTiming));
   }
@@ -168,44 +190,221 @@ int main(int argc, char **argv) {
   clock_t time_clocks = (clock_t)(kernel_time * deviceProp.clockRate);
 #endif
 
-  cudaEventRecord(start_event, 0);
+  //**************************************************************************************************
+  // cudaEventRecord(start_event, 0);
+  // // queue nkernels in separate streams and record when they are done
+  // for (int i = 0; i < nkernels; ++i) {
+  //   clock_block<<<1, 1, 0, streams[i]>>>(&d_a[i], time_clocks);
+  //   total_clocks += time_clocks;
+  //   checkCudaErrors(cudaEventRecord(kernelEvent[i], streams[i]));
 
-  // queue nkernels in separate streams and record when they are done
-  for (int i = 0; i < nkernels; ++i) {
-    clock_block<<<1, 1, 0, streams[i]>>>(&d_a[i], time_clocks);
-    total_clocks += time_clocks;
-    checkCudaErrors(cudaEventRecord(kernelEvent[i], streams[i]));
+  //   // make the last stream wait for the kernel event to be recorded
+  //   checkCudaErrors(
+  //       cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[i], 0));
+  // }
+  int numElements = 50000;
+  cudaError_t err = cudaSuccess;
 
-    // make the last stream wait for the kernel event to be recorded
-    checkCudaErrors(
-        cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[i], 0));
+  size_t size = numElements * sizeof(float);
+  printf("[Vector addition of %d elements]\n", numElements);
+
+  // Allocate the host input vector A
+  float *h_A = (float *)malloc(size);
+
+  // Allocate the host input vector B
+  float *h_B = (float *)malloc(size);
+
+  // Allocate the host output vector C
+  float *h_C = (float *)malloc(size);
+
+  // Verify that allocations succeeded
+  if (h_A == NULL || h_B == NULL || h_C == NULL)
+  {
+    fprintf(stderr, "Failed to allocate host vectors!\n");
+    exit(EXIT_FAILURE);
   }
 
-  // queue a sum kernel and a copy back to host in the last stream.
-  // the commands in this stream get dispatched as soon as all the kernel events
-  // have been recorded
-  sum<<<1, 32, 0, streams[nstreams - 1]>>>(d_a, nkernels);
-  checkCudaErrors(cudaMemcpyAsync(
-      a, d_a, sizeof(clock_t), cudaMemcpyDeviceToHost, streams[nstreams - 1]));
+  // Initialize the host input vectors
+  for (int i = 0; i < numElements; ++i)
+  {
+    h_A[i] = rand() / (float)RAND_MAX;
+    h_B[i] = rand() / (float)RAND_MAX;
+  }
 
-  // at this point the CPU has dispatched all work for the GPU and can continue
-  // processing other tasks in parallel
+  // Allocate the device input vector A
+  float *d_A = NULL;
+  err = cudaMalloc((void **)&d_A, size);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to allocate device vector A (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  // Allocate the device input vector B
+  float *d_B = NULL;
+  err = cudaMalloc((void **)&d_B, size);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to allocate device vector B (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  // Allocate the device output vector C
+  float *d_C = NULL;
+  err = cudaMalloc((void **)&d_C, size);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to allocate device vector C (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  // Copy the host input vectors A and B in host memory to the device input
+  // vectors in
+  // device memory
+  printf("Copy input data from the host memory to the CUDA device\n");
+  err = cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr,
+            "Failed to copy vector A from host to device (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  err = cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr,
+            "Failed to copy vector B from host to device (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  int threadsPerBlock = 1024;
+  int blocksPerGrid = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+
+  cudaEventRecord(start_event, 0);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[0]>>>(d_A, d_B, d_C, numElements);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[1]>>>(d_C, d_A, d_C, numElements);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[2]>>>(d_C, d_B, d_C, numElements);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[3]>>>(d_C, d_A, d_C, numElements);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[4]>>>(d_C, d_B, d_C, numElements);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[5]>>>(d_C, d_A, d_C, numElements);
+  vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, streams[6]>>>(d_C, d_B, d_C, numElements);
+
+  // make the last stream wait for the kernel event to be recorded
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[0], 0));
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[1], 0));
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[2], 0));
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[3], 0));
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[4], 0));
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[5], 0));
+  checkCudaErrors(
+      cudaStreamWaitEvent(streams[nstreams - 1], kernelEvent[6], 0));
 
   // in this sample we just wait until the GPU is done
   checkCudaErrors(cudaEventRecord(stop_event, 0));
   checkCudaErrors(cudaEventSynchronize(stop_event));
   checkCudaErrors(cudaEventElapsedTime(&elapsed_time, start_event, stop_event));
 
-  printf("Expected time for serial execution of %d kernels = %.3fs\n", nkernels,
-         nkernels * kernel_time / 1000.0f);
-  printf("Expected time for concurrent execution of %d kernels = %.3fs\n",
-         nkernels, kernel_time / 1000.0f);
-  printf("Measured time for sample = %.3fs\n", elapsed_time / 1000.0f);
+  err = cudaGetLastError();
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to launch vectorAdd kernel (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  // Copy the device result vector in device memory to the host result vector
+  // in host memory.
+  printf("Copy output data from the CUDA device to the host memory\n");
+  err = cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr,
+            "Failed to copy vector C from device to host (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  // Verify that the result vector is correct
+  bool vector_test_passed = true;
+  for (int i = 0; i < numElements; ++i)
+  {
+    if (fabs(4 * h_A[i] + 4 * h_B[i] - h_C[i]) > 1e-5)
+    {
+      fprintf(stderr, "Result verification failed at element %d!\n", i);
+      vector_test_passed = false;
+      // exit(EXIT_FAILURE);
+    }
+  }
+
+  if (vector_test_passed)
+  {
+    printf("vector add Test PASSED\n");
+  }
+
+  // Free device global memory
+  err = cudaFree(d_A);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to free device vector A (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  err = cudaFree(d_B);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to free device vector B (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  err = cudaFree(d_C);
+
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "Failed to free device vector C (error code %s)!\n",
+            cudaGetErrorString(err));
+    exit(EXIT_FAILURE);
+  }
+
+  // Free host memory
+  free(h_A);
+  free(h_B);
+  free(h_C);
+  //**************************************************************************************************
+
+  printf("Expected time for serial execution of %d kernels = %.3fms\n", nkernels,
+         nkernels * kernel_time);
+  printf("Expected time for concurrent execution of %d kernels = %.3fms\n",
+         nkernels, kernel_time);
+  printf("Measured time for sample = %.3fms\n", elapsed_time);
 
   bool bTestResult = (a[0] > total_clocks);
 
   // release resources
-  for (int i = 0; i < nkernels; i++) {
+  for (int i = 0; i < nkernels; i++)
+  {
     cudaStreamDestroy(streams[i]);
     cudaEventDestroy(kernelEvent[i]);
   }
@@ -218,7 +417,8 @@ int main(int argc, char **argv) {
   cudaFreeHost(a);
   cudaFree(d_a);
 
-  if (!bTestResult) {
+  if (!bTestResult)
+  {
     printf("Test failed!\n");
     exit(EXIT_FAILURE);
   }
